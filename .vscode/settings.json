@@ -1,0 +1,6 @@
+{
+    "terminal.integrated.env.osx": {
+        "PYTHONPATH": "${env:PYTHONPATH}:${workspaceFolder}/src",
+    },
+    "python.pythonPath": "/usr/local/bin/python3"
+}
