@@ -168,6 +168,10 @@ def get_scorecard_data(match_id, match_data_json):
 
 if __name__ == '__main__':
     es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
+    es.indices.delete(index='players', ignore=[400, 404])
+    es.indices.delete(index='statistics', ignore=[400, 404])
+    es.indices.delete(index='teams', ignore=[400, 404])
+    es.indices.delete(index='grounds', ignore=[400, 404])
     teams_data = []
     players_data = []
     grounds_data = []
