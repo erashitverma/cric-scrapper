@@ -1,6 +1,7 @@
 from src import constants
 import requests
 import json
+from src import utils
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from elasticsearch import Elasticsearch
@@ -12,23 +13,21 @@ def find_series_and_match_id(external_series_id):
         'series_id': 0,
         'match_ids': match_ids
     }
-    page = requests.get(constants.IPL_MATCH_LIST_URL + external_series_id)
-    if page.status_code == 200:
-        html_content = page.text
-        soup = BeautifulSoup(html_content, "lxml")
-        matches = soup.findAll("div", attrs={"class": "match-articles"})
 
-        number_of_matches = matches.__len__()
-        first_match_url = matches[0].find("a").attrs.get('href')
-        get_original_url = requests.get(first_match_url)
-        parsed_url = urlparse(get_original_url.url)
-        split_url = parsed_url.path.split("/")
-        series_id = get_last_item(split_url[2])
-        match_id = int(get_last_item(split_url[3]))
+    soup = utils.get_page_data_from_url(constants.IPL_MATCH_LIST_URL + external_series_id)
+    matches = soup.findAll("div", attrs={"class": "match-articles"})
 
-        for i in range(number_of_matches):
-            match_ids.append(str(match_id + i))
-        return_obj['series_id'] = series_id
+    number_of_matches = matches.__len__()
+    first_match_url = matches[0].find("a").attrs.get('href')
+    get_original_url = requests.get(first_match_url)
+    parsed_url = urlparse(get_original_url.url)
+    split_url = parsed_url.path.split("/")
+    series_id = get_last_item(split_url[2])
+    match_id = int(get_last_item(split_url[3]))
+
+    for i in range(number_of_matches):
+        match_ids.append(str(match_id + i))
+    return_obj['series_id'] = series_id
 
     return return_obj
 
@@ -83,10 +82,12 @@ def get_match_data(input_url):
         es.index(index='matches', doc_type='doc', body=match_data.json())
 
 
-def get_player_data(input_url):
-    match_data = requests.get(input_url)
+def get_player_data(series_id, match_id):
+    match_detail_url = constants.MATCH_DETAILS_URL.format(series_id, match_id)
+    match_data = requests.get(match_detail_url)
     if match_data.status_code == 200:
         print(match_data.json().get("match").get("title"))
+        # get_scorecard_data(match_id, match_data.json())
         ground_data_json = match_data.json().get("match").get("ground")
         ground_data = {
             'id': ground_data_json.get('id'),
@@ -115,19 +116,52 @@ def get_player_data(input_url):
                 player_data_json = player.get('player')
                 player_data = {
                     'id': player_data_json.get('id'),
+                    'objectId': player_data_json.get('objectId'),
                     'name': player_data_json.get('name'),
                     'longName': player_data_json.get('longName'),
                     'battingName': player_data_json.get('battingName'),
                     'playingRole': player_data_json.get('playingRole'),
                     'longBattingStyle': player_data_json.get('longBattingStyle'),
-                    'longBowlingStyle': player_data_json.get('longBowlingStyle'),
+                    'longBowlingStyle': player_data_json.get('longBowlingStyle')
                 }
                 if player_data not in players_data:
                     players_data.append(player_data)
+                    player_stats = get_player_stats(player_data.get('objectId'))
+                    es.update(index='statistics', doc_type='doc', id=player_stats.get('objectId'), body={'doc': player_stats, 'doc_as_upsert': True})
                     es.update(index='players', doc_type='doc', id=player_data.get('id'), body={'doc': player_data, 'doc_as_upsert': True})
 
-#def get_player_stats(player_id):
 
+def get_player_stats(object_id):
+    return_object = {'objectId': object_id}
+    player_id = object_id
+    player_stats_html = utils.get_page_data_from_url(constants.PLAYER_STATS_URL.format(str(player_id)))
+    for j in range(2):
+        stats_table_contents = player_stats_html.findAll("tbody")[j].contents
+        for i in range(len(stats_table_contents)):
+            if i % 2 is 1:
+                # print(stats_table_contents[i].findAll("td")[0].contents[0].contents[0].lower())
+                if stats_table_contents[i].findAll("td")[0].contents[0].contents[0].lower() in 't20s':
+                    count = 0
+                    for row_data in stats_table_contents[i].findAll("td")[1:]:
+                        return_object.update({constants.STATS_HEADER_LIST[j][count]: str(row_data.contents[0])})
+                        count = count + 1
+    return return_object
+
+
+def get_scorecard_data(match_id, match_data_json):
+    scorecard_object = {
+        "match_id": match_id,
+    }
+    for inning in match_data_json.get("content").get("scorecard").get("innings"):
+        scorecard_object.update({'innings_id': inning.get("inningNumber")})
+        batting_data = inning.get("inningBatsmen")
+        for batsman in batting_data:
+            for entry in constants.SCORECARD_FIELD_MAPPINGSS:
+                scorecard_object.update({entry[0]: batsman.get(entry[1])})
+    print("ggg")
+
+
+# player_stats_html.findAll("tbody")[0].contents[11].findAll("td")[0].contents[0].contents[0]
 # how to have multiple entries
 # years team attended the season
 # get latest player data jj hh
@@ -141,8 +175,7 @@ if __name__ == '__main__':
     inning = 1
     over = 4
     for match in series_and_match_ids.get('match_ids'):
-        match_detail_url = constants.MATCH_DETAILS_URL.format(series_and_match_ids.get('series_id'), match)
-        get_player_data(match_detail_url)
+        get_player_data(series_and_match_ids.get('series_id'), match)
     # get_match_data(match_detail_url)
     # for j in range(1, 3):
     #    for i in range(2, 24, 2):
