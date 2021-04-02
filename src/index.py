@@ -4,6 +4,7 @@ import json
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from elasticsearch import Elasticsearch
+import psycopg2
 
 
 def find_series_and_match_id(external_series_id):
@@ -97,6 +98,16 @@ def get_player_data(input_url):
         if ground_data not in grounds_data:
             grounds_data.append(ground_data)
             es.update(index='grounds', doc_type='doc', id=ground_data.get('id'), body={'doc': ground_data, 'doc_as_upsert': True})
+            insert_statement = ("INSERT INTO stadium (stadium_id,stadium_name,town,country) VALUES"
+            "("+str(ground_data.get("id"))+",'"+str(ground_data.get("longName")).replace("'","''")+"',"
+            "'"+str(ground_data.get("town"))+"','"+str(ground_data.get("country"))+"') "
+            "ON CONFLICT (stadium_id) "
+            " DO UPDATE SET (stadium_name,town,country) "
+            "= (EXCLUDED.stadium_name, EXCLUDED.town,EXCLUDED.country)")
+
+            print(insert_statement)
+            cursor.execute(insert_statement) 
+
 
         team_data = match_data.json().get("content").get("matchPlayers").get("teamPlayers")
         for team in team_data:
@@ -134,15 +145,21 @@ def get_player_data(input_url):
 
 if __name__ == '__main__':
     es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
+    conn = psycopg2.connect(database="ipl", user='postgres', password='postgres', host='localhost', port= '5432')
+    cursor = conn.cursor()
     teams_data = []
     players_data = []
     grounds_data = []
     series_and_match_ids = find_series_and_match_id("4801")
     inning = 1
     over = 4
-    for match in series_and_match_ids.get('match_ids'):
-        match_detail_url = constants.MATCH_DETAILS_URL.format(series_and_match_ids.get('series_id'), match)
-        get_player_data(match_detail_url)
+    try:
+        for match in series_and_match_ids.get('match_ids'):
+            match_detail_url = constants.MATCH_DETAILS_URL.format(series_and_match_ids.get('series_id'), match)
+            get_player_data(match_detail_url)
+    finally:
+        conn.commit()
+        conn.close()
     # get_match_data(match_detail_url)
     # for j in range(1, 3):
     #    for i in range(2, 24, 2):
