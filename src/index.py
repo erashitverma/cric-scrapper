@@ -22,8 +22,8 @@ def find_series_and_match_id(external_series_id):
     get_original_url = requests.get(first_match_url)
     parsed_url = urlparse(get_original_url.url)
     split_url = parsed_url.path.split("/")
-    series_id = get_last_item(split_url[2])
-    match_id = int(get_last_item(split_url[3]))
+    series_id = utils.get_last_item(split_url[2])
+    match_id = int(utils.get_last_item(split_url[3]))
 
     for i in range(number_of_matches):
         match_ids.append(str(match_id + i))
@@ -32,26 +32,35 @@ def find_series_and_match_id(external_series_id):
     return return_obj
 
 
-def get_last_item(input_param):
-    split_input_block = input_param.split("-")
-    return split_input_block[split_input_block.__len__() - 1]
+def get_new_series_match_id(series_id):
+    match_ids = []
+    return_obj = {
+        'series_id': series_id,
+        'match_ids': match_ids
+    }
+    series_detail_url = constants.SERIES_DATA_URL.format(series_id)
+    series_data = requests.get(series_detail_url).json()
+    for match in series_data.get('content').get('matches'):
+        match_ids.append(match.get('objectId'))
+    return return_obj
 
 
 def get_over_data(input_url):
     over_by_over_data = requests.get(input_url)
     export_data = []
     if over_by_over_data.status_code == 200:
-
         over_by_over_data_json = over_by_over_data.json()
         for ball in reversed(over_by_over_data_json.get('comments')):
-            print(ball)
+            # print(ball)
             comment = ""
             if ball.get('commentTextItems') is not None:
                 comment = ball.get('commentTextItems')[0].get('html')
             play_side_info = get_played_area(comment)
-            export_data.append(
-                [ball.get('oversActual'), ball.get('overNumber'), ball.get('ballNumber'), comment, play_side_info.get('played_side'), play_side_info.get('off_or_leg')])
-            print([ball.get('oversActual'), ball.get('overNumber'), ball.get('ballNumber'), comment, play_side_info.get('played_side'), play_side_info.get('off_or_leg')])
+            gg = utils.extract_json_from_source({}, [ball], constants.BALL_FIELD_MAPPINGS)
+            gg[0].update(play_side_info)
+            export_data.append(gg)
+        for ball in export_data:
+            utils.create_elastic_search_index(ball[0], "ball_by_ball", es)
 
 
 def get_played_area(comment):
@@ -75,60 +84,61 @@ def get_played_area(comment):
     }
 
 
-def get_match_data(input_url):
-    match_data = requests.get(input_url)
-    if match_data.status_code == 200:
-        print(match_data.json())
-        es.index(index='matches', doc_type='doc', body=match_data.json())
-
-
 def get_player_data(series_id, match_id):
+    #match_id = 392238
     match_detail_url = constants.MATCH_DETAILS_URL.format(series_id, match_id)
+    # print(match_detail_url)
     match_data = requests.get(match_detail_url)
     if match_data.status_code == 200:
         print(match_data.json().get("match").get("title"))
-        # get_scorecard_data(match_id, match_data.json())
-        ground_data_json = match_data.json().get("match").get("ground")
-        ground_data = {
-            'id': ground_data_json.get('id'),
-            'longName': ground_data_json.get('longName'),
-            'town': ground_data_json.get('town').get("name"),
-            'country': ground_data_json.get('country').get("name")
-        }
-        if ground_data not in grounds_data:
-            grounds_data.append(ground_data)
-            es.update(index='grounds', doc_type='doc', id=ground_data.get('id'), body={'doc': ground_data, 'doc_as_upsert': True})
-
-        team_data = match_data.json().get("content").get("matchPlayers").get("teamPlayers")
-        for team in team_data:
-            team_data_json = team.get("team")
-            team_data = {
-                'id': team_data_json.get("id"),
-                'name': team_data_json.get("slug")
+        is_no_result = match_data.json().get("match").get("status")
+        if is_no_result in "ABANDONED":
+            get_match_basic_data(match_data.json(), False)
+        else:
+            get_match_basic_data(match_data.json(), True)
+            get_scorecard_data(match_id, match_data.json())
+            get_innings_data(match_id, match_data.json())
+            ground_data_json = match_data.json().get("match").get("ground")
+            ground_data = {
+                'id': ground_data_json.get('id'),
+                'longName': ground_data_json.get('longName'),
+                'town': ground_data_json.get('town').get("name"),
+                'country': ground_data_json.get('country').get("name")
             }
+            if ground_data not in grounds_data:
+                grounds_data.append(ground_data)
+                es.update(index='grounds', doc_type='doc', id=ground_data.get('id'), body={'doc': ground_data, 'doc_as_upsert': True})
 
-            if team_data not in teams_data:
-                teams_data.append(team_data)
-                es.update(index='teams', doc_type='doc', id=team_data.get('id'), body={'doc': team_data, 'doc_as_upsert': True})
-
-            player_data_array = team.get("players")
-            for player in player_data_array:
-                player_data_json = player.get('player')
-                player_data = {
-                    'id': player_data_json.get('id'),
-                    'objectId': player_data_json.get('objectId'),
-                    'name': player_data_json.get('name'),
-                    'longName': player_data_json.get('longName'),
-                    'battingName': player_data_json.get('battingName'),
-                    'playingRole': player_data_json.get('playingRole'),
-                    'longBattingStyle': player_data_json.get('longBattingStyle'),
-                    'longBowlingStyle': player_data_json.get('longBowlingStyle')
+            team_data = match_data.json().get("content").get("matchPlayers").get("teamPlayers")
+            for team in team_data:
+                team_data_json = team.get("team")
+                team_data = {
+                    'id': team_data_json.get("id"),
+                    'name': team_data_json.get("slug")
                 }
-                if player_data not in players_data:
-                    players_data.append(player_data)
-                    player_stats = get_player_stats(player_data.get('objectId'))
-                    es.update(index='statistics', doc_type='doc', id=player_stats.get('objectId'), body={'doc': player_stats, 'doc_as_upsert': True})
-                    es.update(index='players', doc_type='doc', id=player_data.get('id'), body={'doc': player_data, 'doc_as_upsert': True})
+
+                if team_data not in teams_data:
+                    teams_data.append(team_data)
+                    es.update(index='teams', doc_type='doc', id=team_data.get('id'), body={'doc': team_data, 'doc_as_upsert': True})
+
+                player_data_array = team.get("players")
+                for player in player_data_array:
+                    player_data_json = player.get('player')
+                    player_data = {
+                        'id': player_data_json.get('id'),
+                        'objectId': player_data_json.get('objectId'),
+                        'name': player_data_json.get('name'),
+                        'longName': player_data_json.get('longName'),
+                        'battingName': player_data_json.get('battingName'),
+                        'playingRole': player_data_json.get('playingRole'),
+                        'longBattingStyle': player_data_json.get('longBattingStyle'),
+                        'longBowlingStyle': player_data_json.get('longBowlingStyle')
+                    }
+                    if player_data not in players_data:
+                        players_data.append(player_data)
+                        player_stats = get_player_stats(player_data.get('objectId'))
+                        es.update(index='statistics', doc_type='doc', id=player_stats.get('objectId'), body={'doc': player_stats, 'doc_as_upsert': True})
+                        es.update(index='players', doc_type='doc', id=player_data.get('id'), body={'doc': player_data, 'doc_as_upsert': True})
 
 
 def get_player_stats(object_id):
@@ -139,7 +149,6 @@ def get_player_stats(object_id):
         stats_table_contents = player_stats_html.findAll("tbody")[j].contents
         for i in range(len(stats_table_contents)):
             if i % 2 is 1:
-                # print(stats_table_contents[i].findAll("td")[0].contents[0].contents[0].lower())
                 if stats_table_contents[i].findAll("td")[0].contents[0].contents[0].lower() in 't20s':
                     count = 0
                     for row_data in stats_table_contents[i].findAll("td")[1:]:
@@ -152,13 +161,39 @@ def get_scorecard_data(match_id, match_data_json):
     scorecard_object = {
         "match_id": match_id,
     }
+    all_batting_data = []
+    all_bowlings_data = []
     for inning in match_data_json.get("content").get("scorecard").get("innings"):
         scorecard_object.update({'innings_id': inning.get("inningNumber")})
         batting_data = inning.get("inningBatsmen")
-        for batsman in batting_data:
-            for entry in constants.SCORECARD_FIELD_MAPPINGSS:
-                scorecard_object.update({entry[0]: batsman.get(entry[1])})
-    print("ggg")
+        all_batting_data.append(
+            utils.extract_json_from_source({"match_id": match_id, 'innings_id': inning.get("inningNumber")}, batting_data, constants.SCORECARD_FIELD_MAPPINGSS, True))
+        bowling_data = inning.get("inningBowlers")
+        all_bowlings_data.append(
+            utils.extract_json_from_source({"match_id": match_id, 'innings_id': inning.get("inningNumber")}, bowling_data, constants.SCORECARD_BOWLING_FIELD_MAPPINGS))
+    for inning_batsman in all_batting_data:
+        for batsman in inning_batsman:
+            # es.index(index='matches', doc_type='doc', body=match_data.json())
+            es.index(index="batting", doc_type='doc', body=batsman)
+    for innings_bowler in all_bowlings_data:
+        for bowler in innings_bowler:
+            es.index(index="bowling", doc_type='doc', body=bowler)
+
+
+def get_innings_data(match_id, match_data_json):
+    for inning in match_data_json.get("content").get("scorecard").get("innings"):
+        utils.create_elastic_search_index(utils.extract_json_from_source({"match_id": match_id}, [inning], constants.INNINGS_FIELD_MAPPINGS)[0], "innings", es)
+
+
+def get_match_basic_data(match_data_json, is_result):
+    title = match_data_json.get("match").get("title")
+    is_semi = "Semi-Final" in title
+    is_final = "Final" == title
+    match_details_json = utils.extract_json_from_source({}, [match_data_json.get("match")], constants.MATCH_FIELD_MAPPINGS)[0]
+    match_details_json.update({'order': match_counter + 1, 'title': title, 'is_semi': is_semi, 'is_final': is_final})
+    if is_result:
+        match_details_json.update({'playersOfTheMatch': match_data_json.get('content').get('supportInfo').get('playersOfTheMatch')[0].get('player').get('id')})
+    utils.create_elastic_search_index(match_details_json, "match", es)
 
 
 # player_stats_html.findAll("tbody")[0].contents[11].findAll("td")[0].contents[0].contents[0]
@@ -168,21 +203,16 @@ def get_scorecard_data(match_id, match_data_json):
 
 if __name__ == '__main__':
     es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
-    es.indices.delete(index='players', ignore=[400, 404])
-    es.indices.delete(index='statistics', ignore=[400, 404])
-    es.indices.delete(index='teams', ignore=[400, 404])
-    es.indices.delete(index='grounds', ignore=[400, 404])
+    utils.delete_all_elastic_index(es)
     teams_data = []
     players_data = []
     grounds_data = []
-    series_and_match_ids = find_series_and_match_id("4801")
-    inning = 1
-    over = 4
-    for match in series_and_match_ids.get('match_ids'):
+    match_counter = 0
+    series_and_match_ids = get_new_series_match_id("466304")
+    for match in reversed(series_and_match_ids.get('match_ids')):
         get_player_data(series_and_match_ids.get('series_id'), match)
-    # get_match_data(match_detail_url)
-    # for j in range(1, 3):
-    #    for i in range(2, 24, 2):
-    #        match_over_by_over_url = constants.OVER_BY_OVER_URL.format(series_and_match_ids.get('series_id'), series_and_match_ids.get('match_ids')[0], j, i)
-    #        get_over_data(match_over_by_over_url)
+        for j in range(1, 3):
+            for i in range(2, 24, 2):
+                match_over_by_over_url = constants.OVER_BY_OVER_URL.format(series_and_match_ids.get('series_id'), match, j, i)
+                get_over_data(match_over_by_over_url)
     print("Exit")
