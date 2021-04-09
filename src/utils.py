@@ -23,7 +23,7 @@ def extract_json_from_source(input_object, source_objects, fields_array, is_orde
     for i in range(len(source_objects)):
         temp_obj = input_object.copy()
         if is_order:
-            temp_obj.update({"order": i + 1})
+            temp_obj.update({"item_order": i + 1})
         for entry in fields_array:
             #print(entry)
             splitter = "||"
@@ -44,6 +44,11 @@ def extract_json_from_source(input_object, source_objects, fields_array, is_orde
 
 def create_elastic_search_index(input_data, elastic_search_index, elastic_client):
     elastic_client.index(index=elastic_search_index, doc_type='doc', body=input_data)
+
+
+def update_elastic_search_index(input_data, elastic_search_index, elastic_client, unique_id):
+    elastic_client.update(index=elastic_search_index, doc_type='doc', id=unique_id, body={'doc': input_data, 'doc_as_upsert': True})
+    update_insert_query(elastic_search_index,input_data,unique_id)
 
 
 def delete_all_elastic_index(elastic_client):
